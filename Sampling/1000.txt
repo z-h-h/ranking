@@ -1,0 +1,90 @@
+P=0.10 --> TP=17, FP=153
+GuessES: 0.77
+ConstraintES: 0.61
+StatementES: 0.63
+Guess: 0.66
+Constraint: 0.56
+Statement: 0.60
+Best: 0.95
+Random: 0.50
+P=0.20 --> TP=39, FP=156
+GuessES: 0.74
+ConstraintES: 0.60
+StatementES: 0.61
+Guess: 0.64
+Constraint: 0.55
+Statement: 0.59
+Best: 0.90
+Random: 0.50
+P=0.30 --> TP=57, FP=133
+GuessES: 0.71
+ConstraintES: 0.59
+StatementES: 0.60
+Guess: 0.62
+Constraint: 0.54
+Statement: 0.58
+Best: 0.85
+Random: 0.50
+P=0.40 --> TP=58, FP=87
+GuessES: 0.68
+ConstraintES: 0.58
+StatementES: 0.58
+Guess: 0.60
+Constraint: 0.54
+Statement: 0.57
+Best: 0.80
+Random: 0.50
+P=0.50 --> TP=58, FP=58
+GuessES: 0.65
+ConstraintES: 0.56
+StatementES: 0.57
+Guess: 0.59
+Constraint: 0.53
+Statement: 0.56
+Best: 0.75
+Random: 0.50
+P=0.60 --> TP=57, FP=38
+GuessES: 0.62
+ConstraintES: 0.55
+StatementES: 0.56
+Guess: 0.57
+Constraint: 0.52
+Statement: 0.54
+Best: 0.70
+Random: 0.50
+P=0.70 --> TP=56, FP=24
+GuessES: 0.59
+ConstraintES: 0.54
+StatementES: 0.54
+Guess: 0.55
+Constraint: 0.52
+Statement: 0.53
+Best: 0.65
+Random: 0.50
+P=0.80 --> TP=56, FP=14
+GuessES: 0.56
+ConstraintES: 0.53
+StatementES: 0.53
+Guess: 0.54
+Constraint: 0.51
+Statement: 0.52
+Best: 0.60
+Random: 0.50
+P=0.90 --> TP=54, FP=6
+GuessES: 0.53
+ConstraintES: 0.51
+StatementES: 0.51
+Guess: 0.52
+Constraint: 0.51
+Statement: 0.51
+Best: 0.55
+Random: 0.50
+P=1.00 --> TP=58, FP=0
+GuessES: 0.50
+ConstraintES: 0.50
+StatementES: 0.50
+Guess: 0.50
+Constraint: 0.50
+Statement: 0.50
+Best: 0.50
+Random: 0.50

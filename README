@@ -1,0 +1,43 @@
+# Content of Files
+
+1. clang-ranking. The prebuilt binaries of CSA with ranking metric.
+2. driver. A python script to run CSA on a program.
+3. remove-dup. A python script to remove the duplicate reports.
+4. experiments. The experimental results.
+5. APFD. A python script to calculate APFD and the calculated results.
+6. Sampling. A python script to build benchmarks with different precisions.
+7. README. This file.
+
+# How to run CSA on a program?
+
+To run CSA on a program, one has to generate a compilation database of this program. Click [here](https://clang.llvm.org/docs/JSONCompilationDatabase.html) for more information.
+
+Let's say the generated compilation database is located at `/path/to/compile_commands.json`
+
+Then, to run the CSA, just type `/path/to/driver -c /path/to/clang-ranking/bin/clang /path/to/compile_commands.json -o /path/to/output`
+
+After the analysis, reports will be placed at `/path/to/output/{timestamp}/reports`
+
+Type `/path/to/driver -h` for more information.
+
+# How to remove duplicate reports?
+
+To remove duplicate reports, type `/path/to/remove-dup/remove-dup-reports /path/to/output/{timestamp}/reports`
+
+The output will be placed at `unique-reports`
+
+Type `/path/to/remove-dup/remove-dup-reports -h` for more information.
+
+# How to rank the reports?
+
+The number of `Guess` is marked on the top of a report. denoted by letter `G`. (`C` is for `Constr` and `S` is for `Stmt`)
+
+However, we do not have a script to automatically rank the reports, the experimental results were ranked using Excel.
+
+# How to calculate APFD?
+
+To calculate the APFD, one has to export the Excel file to a CSA file.
+
+Then change the value of `csv_file` in script `/path/to/APFD/APFD` to the path of the previous CSV file.
+
+To calculate the APFD, just type `/path/to/APFD/APFD`.

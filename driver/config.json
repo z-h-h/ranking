@@ -1,0 +1,22 @@
+{
+    "output": "analyze",
+    "jobs": 1,
+    "clang": "clang",
+    "timeout": 600,
+    "solver": "crosscheck",
+    "libcxx": "",
+    "enable": [],
+    "disable": [],
+    "advanced": [
+        "stable-report-filename=true",
+        "max-nodes=1000000"
+    ],
+    "docs": {
+        "timeout": "Timeout for each source file, in seconds.",
+        "solver": "Choose from 'range', 'z3' and 'corsscheck'.",
+        "libcxx": "Specify alternative libc++ headers",
+        "enable": "Enable checkers. See 'clang -cc1 -analyzer-checker-help'.",
+        "disable": "Disable checkers. See 'clang -cc1 -analyzer-checker-help'.",
+        "advanced": "Advanced options. See 'clang -cc1 -analyzer-config-help' and 'clang -cc1 -analyzer-checker-option-help'."
+    }
+}

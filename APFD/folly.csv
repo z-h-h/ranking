@@ -1,0 +1,9 @@
+No,File,TP,GuessES,ConstraintES,StatementES,Guess,Constraint,Statement,Note
+1,FollyMemcpy.cpp,1,0,0,19,0,1,24,
+59,SocketAddress.cpp,0,0,1,6,0,3,99,
+4,xlog.cpp,0,1,0,4,1,1,41,
+72,gtest.h,0,2,2,105,2,3,159,
+76,Cursor.h,0,4,3,138,5,5,148,
+75,Cursor.h,0,4,3,138,4,4,148,
+60,gtest-matchers.h,0,4,9,497,4,9,497,
+2,Format.cpp,0,4,6,243,14,25,759,

@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+from subprocess import TimeoutExpired, CalledProcessError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from genidx import genidx
+
+
+def parse_args():
+    default_config = json.loads(Analyzer.default_config_file.read_text())
+    clang = shutil.which(default_config['clang'], mode=os.X_OK)
+    if clang:
+        clang = Path(clang).resolve()
+    parser = argparse.ArgumentParser(
+        description='analyze source files in a compilation database')
+    parser.add_argument('cdb', metavar='FILE', type=Path,
+                        help='compilation database')
+    parser.add_argument('-o', '--output', metavar='DIR', type=Path,
+                        help=f'output to DIR (default: {default_config["output"]})')
+    parser.add_argument('-j', '--jobs', metavar='N', type=int,
+                        help=f'analyze with N jobs (default: {default_config["jobs"]})')
+    parser.add_argument('-c', '--clang', metavar='EXE', type=Path,
+                        help=f'clang executable (default: {clang})')
+    parser.add_argument('-t', '--timeout', metavar='SEC', type=int,
+                        help=f'analysis timeout for each source file (default: {default_config["timeout"]})')
+    parser.add_argument('-s', '--solver', metavar='SOLVER',
+                        choices=['range', 'crosscheck', 'z3'],
+                        help=f'constraint solver (default: {default_config["solver"]})')
+    parser.add_argument('-f', '--file', nargs='+', type=Path,
+                        help='analyze FILE(s) instead of whole compilation database')
+    parser.add_argument('--libcxx', metavar='DIR', type=Path,
+                        help='path to alternative libc++ headers')
+    parser.add_argument('--conf', metavar="FILE", type=Path,
+                        help=f'configuration file (default: {Analyzer.default_config_file.resolve()})')
+    return parser.parse_args()
+
+
+class Process:
+
+    class Stat:
+        timeout = 'timeout',
+        unknown = 'unknown',
+        error = 'error',
+        terminated = 'terminated',
+        ok = 'ok'
+
+    def __init__(self, cmd, timeout):
+        self.cmd = cmd
+        self.timeout = timeout
+        try:
+            proc = subprocess.run(
+                self.cmd, text=True, timeout=self.timeout, capture_output=True, check=True)
+            self.stat = Process.Stat.ok
+            self.stdout = proc.stdout
+            self.stderr = proc.stderr
+        except TimeoutExpired as e:
+            self.stat = Process.Stat.timeout
+            self.stderr = e.stderr
+            self.stdout = e.stdout
+        except CalledProcessError as e:
+            if e.returncode < 0:
+                self.stat = Process.Stat.terminated
+                self.signal = -e.returncode
+            elif e.returncode > 0:
+                self.stat = Process.Stat.error
+                self.code = e.returncode
+            self.stdout = e.stdout
+            self.stderr = e.stderr
+        except Exception as e:
+            self.stat = Process.Stat.unknown
+            self.exception = e
+            self.stderr = ''
+            self.stdout = ''
+
+    def dump_log(self):
+        msg = f'{" ".join(map(lambda c: str(c), self.cmd))}\n\n'
+        if self.stdout:
+            msg += f'STDOUT:\n{self.stdout}\n\n'
+        if self.stderr:
+            msg += f'STDERR:\n{self.stderr}\n\n'
+        if self.stat == Process.Stat.timeout:
+            msg += f'TIMEOUT: {self.timeout}'
+        elif self.stat == Process.Stat.unknown:
+            msg += str(self.exception)
+        elif self.stat == Process.Stat.error:
+            msg += f'EXIT CODE: {self.code}'
+        elif self.stat == Process.Stat.terminated:
+            sig = signal.strsignal(self.signal)
+            msg += f'TERMINATED BY SIGNAL: {self.signal} ({sig})'
+        return msg
+
+
+class Tracker:
+    def __init__(self):
+        self.data = {}
+        self.time = time.localtime(time.time())
+
+    def track(self, tag, total):
+        self.tag = tag
+        self.data[tag] = {}
+        self.data[tag]['total'] = total
+
+    def increase(self, k, v):
+        self.data[self.tag][k] = self.data[self.tag].get(k, 0) + v
+
+
+class Analyzer:
+    '''
+    {output}/
+        cache/
+            edm/                --> externalDefMap of each source file
+            ast/                --> abstract syntax tree of each source file
+            csa/                --> analysis statistics of each source file
+            rpt/                --> bug reports of each source file
+            lmt/                --> last modified time of each source file
+            cfg                 --> config file of this cache folder
+        {result}/
+            logs/
+                edm/            --> logs during generating 'cache/edm/'
+                ast/            --> logs during generating 'cache/ast/'
+                csa/            --> logs during generating 'cache/csa/'
+            reports/            --> bug reports
+            stats.json          --> detailed analysis statistics
+            config.json         --> config file of this analysis
+            overview.txt        --> rough analysis overview
+            stdout.txt          --> record of stdout during analysis
+        compile_commands.json   --> compilation database of analyzed project
+    '''
+
+    class Stat(Process.Stat):
+        cached = 'cached'
+
+    default_config_file = Path(__file__).parent / 'config.json'
+
+    def __init__(self, args):
+        # Read compilation database
+        self.cdb = args.cdb.resolve()
+        self.cdb_list = self.get_cdb_list()
+        self.input_list = self.get_input_list(args.file)
+        # Read args from command or config file
+        default_config = json.loads(Analyzer.default_config_file.read_text())
+        self.config = json.loads(
+            (args.conf or Analyzer.default_config_file).read_text())
+        self.output = args.output or self.config.get(
+            'output', None) or default_config['output']
+        self.output = Path(self.output).resolve()
+        self.jobs = args.jobs or self.config.get(
+            'jobs', None) or default_config['jobs']
+        self.clang = args.clang or self.config.get(
+            'clang', None) or default_config['clang']
+        self.clang = Path(shutil.which(self.clang, mode=os.X_OK)).resolve()
+        self.timeout = args.timeout or self.config.get(
+            'timeout', None) or default_config['timeout']
+        self.solver = args.solver or self.config.get(
+            'solver', None) or default_config['solver']
+        self.libcxx = args.libcxx or self.config.get(
+            'libcxx', None) or default_config['libcxx']
+        if self.libcxx:
+            self.libcxx = Path(self.libcxx).resolve()
+        # Update config
+        self.config['output'] = self.output.as_posix()
+        self.config['jobs'] = self.jobs
+        self.config['clang'] = self.clang.as_posix()
+        self.config['timeout'] = self.timeout
+        self.config['solver'] = self.solver
+        self.config['libcxx'] = str(self.libcxx)
+        self.config['enable'] = self.config.get(
+            'enable', None) or default_config['enable']
+        self.config['disable'] = self.config.get(
+            'disable', None) or default_config['disable']
+        self.config['advanced'] = self.config.get(
+            'advanced', None) or default_config['advanced']
+        # Add & remove misc items
+        self.config['project'] = self.cdb.as_posix()
+        self.config.pop('docs', None)
+
+    def get_cdb_list(self):
+        cdb_list = set()
+        cdb = json.loads(self.cdb.read_bytes())
+        for entry in cdb:
+            file = Path(entry["file"])
+            if not file.is_absolute():
+                directory = Path(entry["directory"])
+                file = directory / file
+            cdb_list.add(file.resolve())
+        return cdb_list
+
+    def get_input_list(self, files):
+        if not files:
+            return self.cdb_list
+        return self.cdb_list.intersection(map(lambda f: f.resolve(), files))
+
+    def get_cache(self, file, tag):
+        return self.cache / tag / file.parent.relative_to('/') / f'{file.name}.{tag}'
+
+    def clear_ctu_cache(self, file):
+        self.get_cache(file, 'edm').unlink(missing_ok=True)
+        self.get_cache(file, 'ast').unlink(missing_ok=True)
+
+    def clear_csa_cache(self, file):
+        self.get_cache(file, 'csa').unlink(missing_ok=True)
+        shutil.rmtree(self.get_cache(file, 'rpt'), ignore_errors=True)
+
+    def clear_all_csa_cache(self):
+        shutil.rmtree(self.cache / 'csa', ignore_errors=True)
+        shutil.rmtree(self.cache / 'rpt', ignore_errors=True)
+
+    def log_print(self, msg):
+        print(msg)
+        self.stdout_text += f'{msg}\n'
+
+    def prepare(self):
+        # Disable AST validation
+        os.environ['LIBCLANG_DISABLE_PCH_VALIDATION'] = '1'
+        self.stdout_text = ''
+        # Prepare clang-extdef-mapping & clang-check
+        self.clang_extdef_mapping = self.clang.parent / 'clang-extdef-mapping'
+        self.clang_check = self.clang.parent / 'clang-check'
+        self.log_print(f'Using "{self.clang}"')
+        if self.libcxx:
+            self.log_print(f'Using "{self.libcxx}"')
+        # Track & record overview
+        self.tracker = Tracker()
+        # Create file & directory paths
+        self.result = self.output / \
+            time.strftime("%Y%m%d-%H%M%S", self.tracker.time)
+        self.result.mkdir(parents=True, exist_ok=True)
+        self.cache = self.output / 'cache'
+        self.logs = self.result / 'logs'
+        self.reports = self.result / 'reports'
+        self.edm = self.cache / 'externalDefMap.txt'
+        self.overview = self.result / 'overview.txt'
+        self.stats = self.result / 'stats.json'
+        self.stdout = self.result / 'stdout.txt'
+        # Copy "compile_commands.json"
+        cdb = self.output / 'compile_commands.json'
+        if not cdb.exists() or not cdb.samefile(self.cdb):
+            shutil.copyfile(self.cdb, cdb)
+        # Check last modified time & timed out file
+        for src in self.cdb_list:
+            src_lmt = str(src.stat().st_mtime)
+            lmt_file = self.get_cache(src, 'lmt')
+            if not lmt_file.exists() or lmt_file.read_text() != src_lmt:
+                # Source file changed, clear cache
+                lmt_file.parent.mkdir(parents=True, exist_ok=True)
+                lmt_file.write_text(src_lmt)
+                self.clear_ctu_cache(src)
+                self.clear_csa_cache(src)
+        # Create & check configuration file
+        config_file = self.cache / 'cfg'
+        if config_file.exists():
+            old_config = json.loads(config_file.read_text())
+            if (self.config['solver'] != old_config['solver'] or
+                self.config['libcxx'] != old_config['libcxx'] or
+                self.config['advanced'] != old_config['advanced'] or
+                self.config['enable'] != old_config['enable'] or
+                    self.config['disable'] != old_config['disable']):
+                # Analysis config changed, clear analysis cache
+                self.clear_all_csa_cache()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(json.dumps(self.config, indent=4))
+        shutil.copyfile(config_file, self.result / 'config.json')
+
+    def generate_log_file(self, input, tag, log_msg):
+        log_file = self.logs / tag / \
+            input.parent.relative_to('/') / f'{input.name}.log'
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_time = time.strftime("%Y-%m-%d %H:%M:%S", self.tracker.time)
+        log_file.write_text(f'{log_time}\n\n{log_msg}')
+
+    def run_jobs(self, job, tag, input_list):
+        self.tracker.track(tag, len(input_list))
+        start_time = time.time()
+        with ThreadPoolExecutor(self.jobs) as e:
+            futures = [e.submit(job, input) for input in input_list]
+            for i, f in enumerate(as_completed(futures), start=1):
+                (stat, input) = f.result()
+                progress = f'[{i}/{len(input_list)}] "{input}"'
+                if stat == Analyzer.Stat.timeout:
+                    self.tracker.increase('timeout', 1)
+                    progress += ' [TIMEOUT]'
+                elif stat == Analyzer.Stat.unknown:
+                    self.tracker.increase('unknown', 1)
+                    progress += ' [UNKNOWN]'
+                elif stat == Analyzer.Stat.error:
+                    self.tracker.increase('error', 1)
+                    progress += ' [ERROR]'
+                elif stat == Analyzer.Stat.terminated:
+                    self.tracker.increase('terminated', 1)
+                    progress += ' [TERMINATED]'
+                elif stat == Analyzer.Stat.ok:
+                    self.tracker.increase('done', 1)
+                elif stat == Analyzer.Stat.cached:
+                    self.tracker.increase('cached', 1)
+                    progress += ' [CACHED]'
+                self.log_print(progress)
+        self.tracker.increase('real time', time.time() - start_time)
+
+    def run_cmd(self, cmd, tag, input, output, timeout, on_success=None):
+        start_time = time.time()
+        if output.exists():
+            self.tracker.increase('total time', time.time() - start_time)
+            return Analyzer.Stat.cached, input
+        output.parent.mkdir(parents=True, exist_ok=True)
+        proc = Process(cmd, timeout)
+        if proc.stat == Process.Stat.ok:
+            if on_success:
+                on_success(proc)
+        else:
+            output.unlink(missing_ok=True)
+            self.generate_log_file(input, tag, proc.dump_log())
+        self.tracker.increase('total time', time.time() - start_time)
+        return proc.stat, input
+
+    def merge_edm(self):
+        # Merge edm files into one 'externalDefMap.txt'
+        edm = {}
+        for input in self.cdb_list:
+            edm_file = self.get_cache(input, 'edm')
+            if not edm_file.exists():
+                continue
+            for line in edm_file.read_text().splitlines():
+                line = line.split(' ')
+                edm[line[0]] = line[1]
+        txt = ''
+        for fun, file in edm.items():
+            txt += f'{fun} ast{file}.ast\n'
+        self.edm.write_text(txt)
+
+    def generate_edm(self):
+        def generate_edm_job(input):
+            edm_file = self.get_cache(input, 'edm')
+            cmd = [self.clang_extdef_mapping, '-p', self.output, input]
+            return self.run_cmd(cmd, 'edm', input, edm_file, None,
+                                on_success=lambda p: edm_file.write_text(p.stdout))
+        self.log_print('Preparing EDM files...')
+        self.run_jobs(generate_edm_job, 'edm', self.cdb_list)
+        self.merge_edm()
+
+    def generate_ast(self):
+        def generate_ast_job(input):
+            ast_file = self.get_cache(input, 'ast')
+            cmd = [self.clang_check, '-emit-ast', input,
+                   '-p', self.output, '-o', ast_file]
+            return self.run_cmd(cmd, 'ast', input, ast_file, None)
+        self.log_print('Preparing AST files...')
+        self.run_jobs(generate_ast_job, 'ast', self.cdb_list)
+
+    def make_analyze_cmd(self, input, stats_file, report_dir):
+        def csa_opt(opt):
+            return ['-extra-arg=-Xclang', '-extra-arg=-analyzer-config',
+                    '-extra-arg=-Xclang', f'-extra-arg={opt}']
+
+        def clang_opt(opt):
+            return ['-extra-arg=-Xclang', f'-extra-arg={opt}']
+
+        cmd = [self.clang_check, '-analyze',
+               '-p', self.output, '-o', report_dir]
+        enable = ','.join(self.config['enable'])
+        if enable:
+            cmd.extend(clang_opt(f'-analyzer-checker={enable}'))
+        disable = ','.join(self.config['disable'])
+        if disable:
+            cmd.extend(clang_opt(f'-analyzer-disable-checker={disable}'))
+        for opt in self.config['advanced']:
+            cmd.extend(csa_opt(opt))
+        cmd.extend(clang_opt(f'-stats-file={stats_file}'))
+        cmd.extend(clang_opt('-analyzer-output=html'))
+        cmd.extend(clang_opt('-analyzer-purge=none'))
+        if self.solver == 'crosscheck':
+            cmd.extend(csa_opt('crosscheck-with-z3=true'))
+        elif self.solver == 'z3':
+            cmd.extend(clang_opt('-analyzer-constraints=z3'))
+        elif self.solver != 'range':
+            print(f'Solver "{self.solver}" not supported', file=sys.stderr)
+            sys.exit(1)
+        if self.libcxx:
+            cmd.extend(['-extra-arg=-stdlib++-isystem',
+                       f'-extra-arg={self.libcxx}'])
+        cmd.extend(csa_opt('experimental-enable-naive-ctu-analysis=true'))
+        cmd.extend(csa_opt(f'ctu-dir={self.cache}'))
+        cmd.append(input)
+        return cmd
+
+    def analyze_code(self):
+        def analyze_code_job(input):
+            stats_file = self.get_cache(input, 'csa')
+            report_dir = self.get_cache(input, 'rpt')
+            cmd = self.make_analyze_cmd(input, stats_file, report_dir)
+            return self.run_cmd(cmd, 'csa', input, stats_file, self.timeout)
+        self.log_print('Analyzing...')
+        self.run_jobs(analyze_code_job, 'csa', self.input_list)
+
+    def generate_overview(self, interrupted):
+        overview = time.strftime("%Y-%m-%d %H:%M:%S", self.tracker.time)
+        overview += ' (Interrupted)\n' if interrupted else ' (Complete)\n'
+        for tag in self.tracker.data.keys():
+            overview += f'{tag}:\n'
+            for key in self.tracker.data[tag].keys():
+                value = self.tracker.data[tag][key]
+                if isinstance(value, float):
+                    value = format(value, '.3f')
+                overview += f'  {key}: {value}\n'
+        self.overview.write_text(overview)
+
+    def cleanup(self):
+        # Write stdout record
+        self.stdout.write_text(self.stdout_text)
+        # Merge stats files into one 'stats.json'
+        stats = {}
+        for input in self.input_list:
+            stats_file = self.get_cache(input, 'csa')
+            if not stats_file.exists():
+                continue
+            for k, v in json.loads(stats_file.read_text()).items():
+                stats[k] = stats.get(k, 0) + v
+        self.stats.write_text(json.dumps(stats, indent=4))
+        # Collect reports
+        self.reports.mkdir(parents=True, exist_ok=True)
+        for input in self.input_list:
+            report_dir = self.get_cache(input, 'rpt')
+            if not report_dir.exists():
+                continue
+            for file in report_dir.iterdir():
+                shutil.copy(file, self.reports)
+        # Generate index.html
+        if any(self.reports.iterdir()):
+            genidx.generate(self.reports.as_posix())
+        # Remove empty directories
+        for p in [p for p in self.output.rglob('*')
+                  if p.is_dir() and not any(p.iterdir())]:
+            os.removedirs(p)
+
+    def analyze(self):
+        try:
+            self.prepare()
+            self.generate_edm()
+            self.generate_ast()
+            self.analyze_code()
+        except KeyboardInterrupt:
+            self.generate_overview(True)
+        else:
+            self.generate_overview(False)
+        finally:
+            self.cleanup()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    analyzer = Analyzer(args)
+    analyzer.analyze()

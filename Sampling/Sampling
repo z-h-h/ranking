@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+
+import csv
+import random
+import copy
+
+
+def calculate(TP, FP, P):
+    if P == 0:
+        return 0, FP
+    if P == 1:
+        return TP, 0
+    # Bounded by TP (BTP)
+    BTP_TP = TP
+    BTP = BTP_TP / P
+    while not BTP.is_integer():
+        BTP_TP -= 1
+        BTP = BTP_TP / P
+    BTP = int(BTP)
+    BTP_FP = BTP - BTP_TP
+    if BTP_FP > FP:
+        BTP = 0
+    # Bounded by FP (BFP)
+    BFP_FP = FP
+    BFP = BFP_FP / (1 - P)
+    while not BFP.is_integer():
+        BFP_FP -= 1
+        BFP = BFP_FP / (1 - P)
+    BFP = int(BFP)
+    BFP_TP = BFP - BFP_FP
+    if BFP_TP > TP:
+        BFP = 0
+    # Choose larger one
+    assert (BTP > 0 or BFP > 0)
+    return (BTP_TP, BTP_FP) if BTP > BFP else (BFP_TP, BFP_FP)
+
+
+class Reports:
+    def __init__(self):
+        self.reports = []
+
+    def add(self, report):
+        self.reports.append(report)
+
+    def eval_area(reports):
+        y = 0
+        x = 0
+        area = 0
+        for report in reports:
+            new_y = y + report['TP']
+            new_x = x + 1
+            area += (y + new_y) / 2
+            y = new_y
+            x = new_x
+        return area / (y * len(reports))
+
+    def best_sort(self):
+        reports = sorted(self.reports, key=lambda r: (-r['TP'], r['No']))
+        return Reports.eval_area(reports)
+
+    def random_sort(self):
+        tp = 0
+        for report in self.reports:
+            tp += report['TP']
+        score = tp / len(self.reports)
+        y = 0
+        x = 0
+        area = 0
+        for _ in range(0, len(self.reports)):
+            new_y = y + score
+            new_x = x + 1
+            area += (y + new_y) / 2
+            y = new_y
+            x = new_x
+        return area / (y * len(self.reports))
+
+    def sort_by(self, key):
+        if key == 'Best':
+            return self.best_sort()
+        if key == 'Random':
+            return self.random_sort()
+        reports = copy.deepcopy(self.reports)
+        reports = sorted(reports, key=lambda r: (r[key], r['No']))
+        prev_report = reports[0]
+        prev_idx = 0
+        cur_sum = prev_report['TP']
+        for cur_idx in range(1, len(reports)):
+            cur_report = reports[cur_idx]
+            if prev_report[key] != cur_report[key]:
+                adjusted = cur_sum / (cur_idx - prev_idx)
+                for i in range(prev_idx, cur_idx):
+                    reports[i]['TP'] = adjusted
+                prev_idx = cur_idx
+                prev_report = cur_report
+                cur_sum = cur_report['TP']
+            else:
+                cur_sum += cur_report['TP']
+        return Reports.eval_area(reports)
+
+
+def read_csv(csv_file):
+    TP_reports = []
+    FP_reports = []
+    with open(csv_file, newline='') as file:
+        reader = csv.DictReader(file, delimiter=',')
+        for row in reader:
+            report = {}
+            for k, v in row.items():
+                report[k] = int(v) if (
+                    k != 'File' and k != 'Note') else v.strip()
+            if report['TP'] == 1:
+                TP_reports.append(report)
+            else:
+                FP_reports.append(report)
+    return TP_reports, FP_reports
+
+
+if __name__ == '__main__':
+    REPEAT = 10000
+    INIT_ADPF = {'GuessES': 0,
+                 'ConstraintES': 0,
+                 'StatementES': 0,
+                 'Guess': 0,
+                 'Constraint': 0,
+                 'Statement': 0,
+                 'Best': 0,
+                 'Random': 0}
+    TP_reports, FP_reports = read_csv('../APFD/total.csv')
+    for Lv in range(1, 11):
+        P = Lv / 10
+        new_TP, new_FP = calculate(len(TP_reports), len(FP_reports), P)
+        print(f'P={format(P, ".2f")} --> TP={new_TP}, FP={new_FP}')
+        ADPF = copy.deepcopy(INIT_ADPF)
+        for _ in range(REPEAT):
+            new_TP_reports = random.sample(TP_reports, new_TP)
+            new_FP_reports = random.sample(FP_reports, new_FP)
+            reports = Reports()
+            for r in new_TP_reports:
+                reports.add(r)
+            for r in new_FP_reports:
+                reports.add(r)
+            for key in ADPF.keys():
+                ADPF[key] += reports.sort_by(key)
+        # Calculate average ADPF
+        for key, value in ADPF.items():
+            print(f'{key}: {format(value / REPEAT, ".2f")}')

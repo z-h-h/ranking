@@ -1,0 +1,12 @@
+No,File,TP,GuessES,ConstraintES,StatementES,Guess,Constraint,Statement,Note
+5,wslay_event.c,1,0,6,105,4,28,472,
+6,wslay_event.c,1,0,4,95,16,9,176,
+7,wslay_event.c,1,0,5,122,23,37,676,
+10,SocketCore.cc,0,1,4,57,3,9,200,
+9,SocketCore.cc,0,1,3,79,5,8,222,
+8,wslay_event.c,0,1,2,42,12,21,360,
+2,BitfieldMan.cc,0,2,3,77,2,5,182,
+11,OptionParser.cc,0,2,8,252,3,10,290,
+4,array_fun.h,0,4,5,244,5,9,385,
+3,wslay_event.c,0,4,4,58,22,31,437,
+1,wslay_event.c,0,6,11,257,23,37,642,
